@@ -1,14 +1,15 @@
 package main
 
 import (
+	"fmt"
 	pb "github.com/fran11388/grpc-chat/chat_service"
 	"google.golang.org/grpc"
-	"io"
 	"log"
 	"math/rand"
 	"net"
 	"strconv"
 	"sync"
+	"time"
 )
 
 type ChatServer struct {
@@ -25,31 +26,36 @@ type messageHandler struct {
 	mu           sync.Mutex
 }
 
-var messageHandlerInstance = messageHandler{}
+var messageHandlerInstance = messageHandler{clientMsgMap:make(map[string][]*message)}
 
 func (s *ChatServer) Chat(stream pb.ChatService_ChatServer) error {
-	//為每一client生成unique id
 	clientId := strconv.Itoa(rand.Intn(1e6))
+	registerClient(clientId)
 	errCh := make(chan error)
 
-	//持續確認用戶有沒有發訊息過來，有的話推送給其他用戶
 	go receiveFromStream(stream, clientId, errCh)
 
-	//持續確認有沒有需要發送給用戶的消息
 	go sendToStream(stream, clientId, errCh)
 
 	return <-errCh
 }
 
+func registerClient(clientId string){
+	log.Println(fmt.Sprintf("register client: %s",clientId))
+	messageHandlerInstance.mu.Lock()
+	messageHandlerInstance.clientMsgMap[clientId]=[]*message{}
+	messageHandlerInstance.mu.Unlock()
+}
+
 func receiveFromStream(stream pb.ChatService_ChatServer, clientId string, errCh chan error) {
 	for {
 		in, err := stream.Recv()
-		if err == io.EOF {
-			errCh <- nil
-		}
 		if err != nil {
+			log.Println(fmt.Sprintf("err:%s",err))
 			errCh <- err
+			return
 		}
+		log.Println(fmt.Sprintf("receive, name:%s, text:%s\n",in.GetName(),in.GetText()))
 		msg := &message{
 			clientId: clientId,
 			name:     in.GetName(),
@@ -62,14 +68,15 @@ func receiveFromStream(stream pb.ChatService_ChatServer, clientId string, errCh 
 func sendToStream(stream pb.ChatService_ChatServer, clientId string, errCh chan error) {
 	//loop determine have new msg
 	for {
+		time.Sleep(500 * time.Millisecond)
+		messageHandlerInstance.mu.Lock()
 		msgQue := messageHandlerInstance.clientMsgMap[clientId]
 		if len(msgQue) > 0 {
-			messageHandlerInstance.mu.Lock()
+			log.Println(fmt.Sprintf("client:%s, have new message",clientId))
 			needSendMsgs := make([]*message, len(msgQue))
 			//this prevents blocking other clients
 			copy(needSendMsgs, msgQue)
 			messageHandlerInstance.clientMsgMap[clientId] = []*message{}
-			messageHandlerInstance.mu.Unlock()
 
 			for _, msg := range needSendMsgs {
 				res := &pb.ChatResponse{Name: msg.name, Text: msg.text}
@@ -78,9 +85,10 @@ func sendToStream(stream pb.ChatService_ChatServer, clientId string, errCh chan 
 					errCh <- err
 					return
 				}
+				log.Println(fmt.Sprintf("sned msg to client:%s name:%s, text:%s",clientId,msg.name,msg.text))
 			}
 		}
-
+		messageHandlerInstance.mu.Unlock()
 	}
 }
 
@@ -92,7 +100,7 @@ func pushMsgToOtherClient(senderClientId string, msg *message) {
 			clientMsgMap[clientId] = append(queue, msg)
 		}
 	}
-	messageHandlerInstance.mu.Lock()
+	messageHandlerInstance.mu.Unlock()
 }
 
 func main() {
