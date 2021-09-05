@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
 	pb "github.com/fran11388/grpc-chat/chat_service"
+	"google.golang.org/grpc"
 	"io"
+	"log"
 	"math/rand"
+	"net"
 	"strconv"
 	"sync"
 )
@@ -13,16 +15,17 @@ type ChatServer struct {
 	pb.UnimplementedChatServiceServer
 }
 
-type message struct{
+type message struct {
 	clientId string
 	name     string
-	text string
+	text     string
 }
 type messageHandler struct {
 	clientMsgMap map[string][]*message
 	mu           sync.Mutex
 }
-var messageHandlerInstance=messageHandler{}
+
+var messageHandlerInstance = messageHandler{}
 
 func (s *ChatServer) Chat(stream pb.ChatService_ChatServer) error {
 	//為每一client生成unique id
@@ -42,37 +45,37 @@ func receiveFromStream(stream pb.ChatService_ChatServer, clientId string, errCh 
 	for {
 		in, err := stream.Recv()
 		if err == io.EOF {
-			errCh<-nil
+			errCh <- nil
 		}
 		if err != nil {
-			errCh<-err
+			errCh <- err
 		}
-		msg:=&message{
+		msg := &message{
 			clientId: clientId,
-			name:in.GetName(),
-			text: in.GetText(),
+			name:     in.GetName(),
+			text:     in.GetText(),
 		}
-		pushMsgToOtherClient(clientId,msg)
+		pushMsgToOtherClient(clientId, msg)
 	}
 }
 
 func sendToStream(stream pb.ChatService_ChatServer, clientId string, errCh chan error) {
 	//loop determine have new msg
 	for {
-		msgQue:=messageHandlerInstance.clientMsgMap[clientId]
-		if len(msgQue)>0{
+		msgQue := messageHandlerInstance.clientMsgMap[clientId]
+		if len(msgQue) > 0 {
 			messageHandlerInstance.mu.Lock()
-			needSendMsgs:=make([]*message,len(msgQue))
+			needSendMsgs := make([]*message, len(msgQue))
 			//this prevents blocking other clients
-			copy(needSendMsgs,msgQue)
-			messageHandlerInstance.clientMsgMap[clientId]=[]*message{}
+			copy(needSendMsgs, msgQue)
+			messageHandlerInstance.clientMsgMap[clientId] = []*message{}
 			messageHandlerInstance.mu.Unlock()
 
-			for _,msg:=range needSendMsgs{
-				res:=&pb.ChatResponse{Name:msg.name,Text: msg.text}
+			for _, msg := range needSendMsgs {
+				res := &pb.ChatResponse{Name: msg.name, Text: msg.text}
 				err := stream.Send(res)
 				if err != nil {
-					errCh<-err
+					errCh <- err
 					return
 				}
 			}
@@ -81,18 +84,26 @@ func sendToStream(stream pb.ChatService_ChatServer, clientId string, errCh chan 
 	}
 }
 
-
-func pushMsgToOtherClient(senderClientId string,msg *message){
+func pushMsgToOtherClient(senderClientId string, msg *message) {
 	messageHandlerInstance.mu.Lock()
-	clientMsgMap:=messageHandlerInstance.clientMsgMap
-	for clientId, queue:=range clientMsgMap{
-		if senderClientId!=clientId{
-			clientMsgMap[clientId]=append(queue,msg)
+	clientMsgMap := messageHandlerInstance.clientMsgMap
+	for clientId, queue := range clientMsgMap {
+		if senderClientId != clientId {
+			clientMsgMap[clientId] = append(queue, msg)
 		}
 	}
 	messageHandlerInstance.mu.Lock()
 }
 
 func main() {
-	fmt.Println("asd")
+	addr := "localhost:50051"
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	log.Println("server listen : ", addr)
+	var opts []grpc.ServerOption
+	grpcServer := grpc.NewServer(opts...)
+	pb.RegisterChatServiceServer(grpcServer, &ChatServer{})
+	grpcServer.Serve(lis)
 }
