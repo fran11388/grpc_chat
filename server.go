@@ -104,6 +104,7 @@ func pushMsgToOtherClient(senderClientId string, msg *message) {
 }
 
 func main() {
+	//todo enable ssl, lock performance improve, refactor code
 	addr := "localhost:50051"
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
